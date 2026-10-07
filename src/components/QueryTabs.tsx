@@ -1,18 +1,29 @@
 import { CloseOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Tabs } from 'antd';
-import type { QuerySession } from '../types/sql';
+import { Badge, Button, Tabs } from 'antd';
+import type { BatchStatus, QuerySession } from '../types/sql';
 
 interface QueryTabsProps {
   tabs: QuerySession[];
   activeTabId: string;
+  statusByTab?: Record<string, BatchStatus | undefined>;
   onActivate: (id: string) => void;
   onAdd: () => void;
   onClose: (id: string) => void;
 }
 
+type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
+
+const STATUS_COLOR: Record<BatchStatus, BadgeStatus> = {
+  running: 'processing',
+  success: 'success',
+  failed: 'error',
+  cancelled: 'default',
+};
+
 export function QueryTabs({
   tabs,
   activeTabId,
+  statusByTab,
   onActivate,
   onAdd,
   onClose,
@@ -28,16 +39,23 @@ export function QueryTabs({
         }}
         type="editable-card"
         hideAdd
-        items={tabs.map((tab) => ({
-          key: tab.id,
-          label: (
-            <span className="tab-label">
-              <span className="tab-status" />
-              {tab.title}
-            </span>
-          ),
-          closable: true,
-        }))}
+        items={tabs.map((tab) => {
+          const status = statusByTab?.[tab.id];
+          return {
+            key: tab.id,
+            label: (
+              <span className="tab-label">
+                {status ? (
+                  <Badge status={STATUS_COLOR[status]} className="tab-status-badge" />
+                ) : (
+                  <span className="tab-status" />
+                )}
+                {tab.title}
+              </span>
+            ),
+            closable: true,
+          };
+        })}
       />
       <Button
         type="text"

@@ -15,6 +15,17 @@ const STATUSES = ['待审核', '进行中', '已发货', '已完成', '异常'];
 const PRODUCTS = ['企业云主机', '边缘计算节点', '数据治理平台', '智能客服', '可观测套件', '灾备服务'];
 const OWNERS = ['陈嘉', '林月', '周砺', '许宁', '韩舟', '顾清', '沈河', '陆遥'];
 
+/**
+ * 数据源版本号。每次数据快照变化时递增，
+ * 用于固定查询提交时的数据版本，并在版本变化时判定结果是否失效。
+ */
+export const DATA_VERSION = 1;
+export const DATA_VERSION_LABEL = '初始快照';
+
+export function getDataSourceVersion(): { version: number; label: string; changedAt: number } {
+  return { version: DATA_VERSION, label: DATA_VERSION_LABEL, changedAt: 0 };
+}
+
 const orderColumns: ColumnSchema[] = [
   { name: 'order_no', type: 'string', description: '订单业务编号' },
   { name: 'customer_name', type: 'string', description: '客户名称' },

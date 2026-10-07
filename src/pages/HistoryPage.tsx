@@ -73,6 +73,16 @@ export function HistoryPage() {
                         {item.success ? `${item.rowCount} 行` : '失败'}
                       </Tag>
                       {item.success && <span className="muted-text">{item.elapsedMs} ms</span>}
+                      {item.batchId && (
+                        <Tag color="blue" style={{ marginLeft: 8 }}>
+                          批次 {item.batchId.replace('legacy-', '').slice(0, 8)}
+                        </Tag>
+                      )}
+                      {item.dataVersion !== undefined && (
+                        <Tag color="default" style={{ marginLeft: 4 }}>
+                          依据 v{item.dataVersion}
+                        </Tag>
+                      )}
                     </span>
                   }
                   description={

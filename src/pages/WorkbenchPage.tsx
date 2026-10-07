@@ -4,17 +4,18 @@ import {
   FormatPainterOutlined,
   HistoryOutlined,
   StopOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Alert, App as AntdApp, Button, Input, Modal, Space, Tooltip } from 'antd';
-import { useMemo, useRef, useState } from 'react';
+import { Alert, App as AntdApp, Button, Input, Modal, Space, Tag, Tooltip } from 'antd';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { QueryTabs } from '../components/QueryTabs';
 import { ResultGrid } from '../components/ResultGrid';
 import { SchemaTree } from '../components/SchemaTree';
 import { SqlEditor } from '../components/SqlEditor';
 import { executeMockQuery, getSchema } from '../data/mockDatabase';
 import { useWorkbenchStore } from '../stores/workbenchStore';
-import type { QueryErrorDetail, QueryResult } from '../types/sql';
+import type { BatchStatus, QueryErrorDetail } from '../types/sql';
 import { formatSql } from '../utils/sqlFormatter';
 import { ERROR_MAPPINGS, toQueryErrorDetail } from '../utils/queryErrors';
 
@@ -26,24 +27,73 @@ export function WorkbenchPage() {
   const closeTab = useWorkbenchStore((state) => state.closeTab);
   const activateTab = useWorkbenchStore((state) => state.activateTab);
   const updateTab = useWorkbenchStore((state) => state.updateTab);
-  const addHistory = useWorkbenchStore((state) => state.addHistory);
   const addFavorite = useWorkbenchStore((state) => state.addFavorite);
+  const submitBatch = useWorkbenchStore((state) => state.submitBatch);
+  const completeBatch = useWorkbenchStore((state) => state.completeBatch);
+  const failBatch = useWorkbenchStore((state) => state.failBatch);
+  const cancelBatch = useWorkbenchStore((state) => state.cancelBatch);
+  const recomputeBatch = useWorkbenchStore((state) => state.recomputeBatch);
+  const bumpDataVersion = useWorkbenchStore((state) => state.bumpDataVersion);
+  const dataVersion = useWorkbenchStore((state) => state.dataVersion);
+  const dataVersionLabel = useWorkbenchStore((state) => state.dataVersionLabel);
+  const batches = useWorkbenchStore((state) => state.batches);
+  const latestBatchByTab = useWorkbenchStore((state) => state.latestBatchByTab);
+
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   const schemaQuery = useQuery({ queryKey: ['database-schema'], queryFn: getSchema });
-  const abortRef = useRef<AbortController | null>(null);
-  const [result, setResult] = useState<QueryResult | null>(null);
-  const [error, setError] = useState<QueryErrorDetail | null>(null);
+
+  // 每个标签独立的 AbortController
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+
   const [favoriteOpen, setFavoriteOpen] = useState(false);
   const [favoriteName, setFavoriteName] = useState('');
   const [lastExecutedSql, setLastExecutedSql] = useState('');
+
+  // 从 store 派生当前标签的批次状态
+  const latestBatchId = activeTab ? latestBatchByTab[activeTab.id] : undefined;
+  const latestBatch = latestBatchId ? batches[latestBatchId] : undefined;
+  const displayedBatch = activeTab
+    ? (() => {
+        const tab = tabs.find((t) => t.id === activeTab.id);
+        if (!tab) return undefined;
+        const latest = tab.latestBatchId ? batches[tab.latestBatchId] : undefined;
+        if (latest?.status === 'success') return latest;
+        if (latest?.status === 'running') return latest;
+        const lastComplete = tab.lastCompleteBatchId
+          ? batches[tab.lastCompleteBatchId]
+          : undefined;
+        return lastComplete?.status === 'success' ? lastComplete : undefined;
+      })()
+    : undefined;
+
+  const result =
+    displayedBatch && displayedBatch.status === 'success' && displayedBatch.result
+      ? displayedBatch.result
+      : null;
+  const error = latestBatch && latestBatch.status === 'failed' ? latestBatch.error : null;
+  const running = latestBatch?.status === 'running';
+  // 展示的结果是否已过期（数据版本变化后未固定的结果失效）
+  const stale = displayedBatch
+    ? displayedBatch.dataVersion !== dataVersion
+    : false;
 
   const executeMutation = useMutation({
     mutationFn: ({ sql, signal }: { sql: string; signal: AbortSignal }) =>
       executeMockQuery(sql, signal),
   });
 
-  const running = executeMutation.isPending;
   const errorTitle = error ? ERROR_MAPPINGS[error.code]?.title ?? '执行失败' : '';
+
+  // 每个标签的最新批次状态
+  const statusByTab = useMemo(() => {
+    const result: Record<string, BatchStatus | undefined> = {};
+    tabs.forEach((tab) => {
+      const batchId = latestBatchByTab[tab.id];
+      const batch = batchId ? batches[batchId] : undefined;
+      result[tab.id] = batch?.status;
+    });
+    return result;
+  }, [tabs, latestBatchByTab, batches]);
 
   const complexity = useMemo(() => {
     const sql = activeTab?.sql ?? '';
@@ -54,50 +104,94 @@ export function WorkbenchPage() {
     };
   }, [activeTab?.sql]);
 
+  // 组件卸载时取消所有运行中的查询
+  useEffect(() => {
+    const controllers = abortControllersRef.current;
+    return () => {
+      controllers.forEach((controller) => controller.abort());
+      controllers.clear();
+    };
+  }, []);
+
   if (!activeTab) return null;
 
   const execute = async () => {
-    if (running) return;
     const sql = activeTab.sql.trim();
-    abortRef.current = new AbortController();
-    setError(null);
-    setResult(null);
+    // 如果该标签有正在运行的旧批次，先取消它（同一标签只接受最新批次）
+    if (running && latestBatch) {
+      const oldController = abortControllersRef.current.get(activeTab.id);
+      if (oldController) {
+        oldController.abort();
+      }
+      cancelBatch(latestBatch.id);
+    }
+    // 提交批次：固定查询语句与数据源版本
+    const batch = submitBatch(activeTab.id, sql);
     setLastExecutedSql(sql);
+
+    const controller = new AbortController();
+    abortControllersRef.current.set(activeTab.id, controller);
+
     try {
       const nextResult = await executeMutation.mutateAsync({
         sql,
-        signal: abortRef.current.signal,
+        signal: controller.signal,
       });
-      setResult(nextResult);
-      addHistory({
-        sql,
-        executedAt: Date.now(),
-        elapsedMs: nextResult.elapsedMs,
-        rowCount: nextResult.rowCount,
-        success: true,
-      });
+      // 仅当该批次仍是最新批次时才写入结果
+      completeBatch(batch.id, nextResult);
       if (nextResult.truncated) {
         void message.warning(`结果超过 LIMIT，已返回前 ${nextResult.rowCount} 行`);
       }
     } catch (queryError) {
       const detail = toQueryErrorDetail(queryError, sql);
-      setError(detail);
-      addHistory({
-        sql,
-        executedAt: Date.now(),
-        elapsedMs: 0,
-        rowCount: 0,
-        success: false,
-        error: detail.message,
-      });
+      if (detail.code === 'QUERY_ABORTED') {
+        // 取消的请求不写结果
+        cancelBatch(batch.id);
+        void message.info('已取消查询');
+      } else {
+        failBatch(batch.id, detail);
+      }
     } finally {
-      abortRef.current = null;
+      abortControllersRef.current.delete(activeTab.id);
     }
   };
 
   const cancel = () => {
-    abortRef.current?.abort();
-    void message.info('已发送取消请求');
+    const controller = abortControllersRef.current.get(activeTab.id);
+    if (controller) {
+      controller.abort();
+      // catch 块会调用 cancelBatch
+    } else {
+      // 没有进行中的请求，直接标记取消
+      if (latestBatch?.status === 'running') {
+        cancelBatch(latestBatch.id);
+      }
+    }
+  };
+
+  const recompute = () => {
+    if (!displayedBatch) return;
+    const newBatch = recomputeBatch(displayedBatch.id);
+    if (!newBatch) return;
+    // 用新批次执行
+    const controller = new AbortController();
+    abortControllersRef.current.set(activeTab.id, controller);
+    executeMutation
+      .mutateAsync({ sql: newBatch.sql, signal: controller.signal })
+      .then((nextResult) => {
+        completeBatch(newBatch.id, nextResult);
+      })
+      .catch((queryError) => {
+        const detail = toQueryErrorDetail(queryError, newBatch.sql);
+        if (detail.code === 'QUERY_ABORTED') {
+          cancelBatch(newBatch.id);
+        } else {
+          failBatch(newBatch.id, detail);
+        }
+      })
+      .finally(() => {
+        abortControllersRef.current.delete(activeTab.id);
+      });
   };
 
   const runFormat = () => {
@@ -123,6 +217,7 @@ export function WorkbenchPage() {
           <QueryTabs
             tabs={tabs}
             activeTabId={activeTab.id}
+            statusByTab={statusByTab}
             onActivate={activateTab}
             onAdd={() => addTab()}
             onClose={closeTab}
@@ -161,6 +256,21 @@ export function WorkbenchPage() {
               </Button>
             </Space>
             <Space size={16} className="editor-meta">
+              <Tooltip title="数据源版本：结果依据此版本固定，版本变化后未固定结果失效">
+                <Tag icon={<SyncOutlined />} color={stale ? 'warning' : 'default'}>
+                  数据版本 v{dataVersion}
+                </Tag>
+              </Tooltip>
+              <Button
+                type="text"
+                size="small"
+                onClick={() => {
+                  bumpDataVersion();
+                  void message.info('数据源版本已更新，未固定的结果已失效');
+                }}
+              >
+                刷新数据
+              </Button>
               <span>
                 <HistoryOutlined /> {complexity.lines} 行 / {complexity.chars} 字符
               </span>
@@ -177,7 +287,28 @@ export function WorkbenchPage() {
               type="error"
               message={`${errorTitle} [${error.code}] 第 ${error.line} 行，第 ${error.column} 列`}
               description={`${error.message} ${error.hint}`}
-              onClose={() => setError(null)}
+              onClose={() => {
+                // 清除当前批次的错误展示（不删除批次记录）
+                if (latestBatch?.status === 'failed') {
+                  // 通过提交空操作清除错误状态：标记为已取消
+                  cancelBatch(latestBatch.id);
+                }
+              }}
+            />
+          )}
+          {stale && result && (
+            <Alert
+              showIcon
+              type="warning"
+              message="数据源版本已更新，当前结果可能过期"
+              description={
+                <span>
+                  结果依据 v{displayedBatch?.dataVersion} · {dataVersionLabel}，当前版本 v{dataVersion}。
+                  <Button type="link" size="small" onClick={recompute}>
+                    重新执行以刷新结果
+                  </Button>
+                </span>
+              }
             />
           )}
           <div className="editor-wrap">
@@ -192,7 +323,15 @@ export function WorkbenchPage() {
             />
           </div>
         </section>
-        <ResultGrid result={result} loading={running} error={error?.message ?? null} />
+        <ResultGrid
+          result={result}
+          loading={running}
+          error={error?.message ?? null}
+          batchId={displayedBatch?.id}
+          dataVersion={displayedBatch?.dataVersion}
+          currentDataVersion={dataVersion}
+          stale={stale}
+        />
       </main>
       <Modal
         open={favoriteOpen}

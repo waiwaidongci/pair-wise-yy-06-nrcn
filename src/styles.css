@@ -366,6 +366,18 @@ input {
   background: #34c38f;
 }
 
+.tab-status-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+}
+
+.result-batch-tag {
+  margin-left: 4px;
+  font-family: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+  font-size: 11px;
+}
+
 .add-query-tab {
   align-self: center;
   margin: 0 2px;

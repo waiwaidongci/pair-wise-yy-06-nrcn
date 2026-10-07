@@ -1,5 +1,5 @@
 import { CopyOutlined, DownloadOutlined, TableOutlined } from '@ant-design/icons';
-import { App as AntdApp, Button, Empty, Spin, Table, Tag } from 'antd';
+import { App as AntdApp, Button, Empty, Spin, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TableProps } from 'antd';
 import { useEffect, useMemo, useState, type ThHTMLAttributes } from 'react';
@@ -9,6 +9,10 @@ interface ResultGridProps {
   result: QueryResult | null;
   loading: boolean;
   error: string | null;
+  batchId?: string;
+  dataVersion?: number;
+  currentDataVersion?: number;
+  stale?: boolean;
 }
 
 interface ResizableTitleProps extends ThHTMLAttributes<HTMLTableCellElement> {
@@ -50,7 +54,15 @@ function normalizeRow(row: Record<string, SqlValue>): Record<string, SqlValue> {
   return row;
 }
 
-export function ResultGrid({ result, loading, error }: ResultGridProps) {
+export function ResultGrid({
+  result,
+  loading,
+  error,
+  batchId,
+  dataVersion,
+  currentDataVersion,
+  stale,
+}: ResultGridProps) {
   const { message } = AntdApp.useApp();
   const [widths, setWidths] = useState<Record<string, number>>({});
 
@@ -168,6 +180,22 @@ export function ResultGrid({ result, loading, error }: ResultGridProps) {
               </Tag>
               <span>匹配 {result.totalMatched.toLocaleString('zh-CN')} 行</span>
               <span>· {result.elapsedMs} ms</span>
+              {batchId && (
+                <Tooltip title={`批次号：${batchId}`}>
+                  <Tag color="blue" className="result-batch-tag">
+                    批次 {batchId.slice(0, 8)}
+                  </Tag>
+                </Tooltip>
+              )}
+              {dataVersion !== undefined && (
+                <Tooltip title={`结果所依据的数据源版本`}>
+                  <Tag color={stale ? 'warning' : 'default'}>
+                    v{dataVersion}
+                    {stale && currentDataVersion !== undefined && ` → v${currentDataVersion}`}
+                  </Tag>
+                </Tooltip>
+              )}
+              {stale && <Tag color="warning">已过期</Tag>}
             </>
           )}
         </div>
