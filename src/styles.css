@@ -106,9 +106,8 @@ input {
 }
 
 .data-source-card {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
   gap: 7px;
   margin: 7px 12px;
   padding: 13px;
@@ -116,6 +115,12 @@ input {
   border-radius: 9px;
   background: rgba(255, 255, 255, .035);
   color: #dce7f8;
+}
+
+.data-source-card > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .data-source-card strong,
@@ -133,6 +138,32 @@ input {
   padding-left: 13px;
   color: #8495b2;
   font-size: 10px;
+}
+
+.data-source-refresh {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid rgba(75, 154, 255, .4);
+  border-radius: 6px;
+  background: rgba(23, 105, 255, .18);
+  color: #cfe2ff;
+  font-size: 11px;
+  cursor: pointer;
+  transition: .15s ease;
+}
+
+.data-source-refresh:hover:not(:disabled) {
+  background: rgba(23, 105, 255, .35);
+}
+
+.data-source-refresh:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+.data-source-current {
+  word-break: break-all;
+  line-height: 1.5;
 }
 
 .source-pulse {
@@ -366,6 +397,29 @@ input {
   background: #34c38f;
 }
 
+.tab-status--running {
+  background: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, .18);
+  animation: tab-pulse 1s ease-in-out infinite;
+}
+
+.tab-status--stale {
+  background: #faad14;
+}
+
+.tab-stale-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #faad14;
+  box-shadow: 0 0 0 2px rgba(250, 173, 20, .25);
+}
+
+@keyframes tab-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+
 .add-query-tab {
   align-self: center;
   margin: 0 2px;
@@ -443,9 +497,34 @@ kbd {
 }
 
 .result-body {
+  position: relative;
   min-height: 0;
   flex: 1;
   overflow: hidden;
+}
+
+.result-loading-overlay {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  inset: 0;
+  background: rgba(255, 255, 255, .72);
+  color: #1769ff;
+  font-size: 12px;
+  backdrop-filter: blur(1px);
+}
+
+.result-notice {
+  margin: 8px 12px 0;
+  flex: 0 0 auto;
+}
+
+.result-notice .ant-alert-description button {
+  padding: 0;
+  margin-left: 4px;
 }
 
 .result-body .ant-table-wrapper,
@@ -572,6 +651,24 @@ kbd {
 .muted-text {
   margin-left: 9px;
   color: #667085;
+}
+
+.history-batch-title {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.history-batch-id {
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.history-batch-note {
+  display: block;
+  font-size: 12px;
 }
 
 .favorite-grid {

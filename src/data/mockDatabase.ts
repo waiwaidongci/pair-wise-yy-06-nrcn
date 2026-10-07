@@ -1,12 +1,16 @@
 import type {
   ColumnSchema,
   DatabaseSchema,
+  DataSourceVersion,
   QueryColumn,
   QueryResult,
   SqlValue,
   TableSchema,
 } from '../types/sql';
 import { SqlQueryError } from '../utils/queryErrors';
+
+/** 数据源 ETL 版本序号的持久化位置（保证刷新后版本与数据内容一致） */
+const VERSION_STORAGE_KEY = 'pair-wise-yy-06-data-source-version';
 
 const CUSTOMER_PREFIXES = ['远海', '星图', '柏川', '新域', '启明', '屹辰', '和光', '云舟'];
 const CUSTOMER_SUFFIXES = ['科技有限公司', '智能制造有限公司', '供应链有限公司', '数据服务有限公司'];
@@ -145,11 +149,154 @@ export function getSchema(): DatabaseSchema {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* 数据源版本：每次 ETL 刷新产生新版本，提交批次时固定版本与数据快照 */
+/* ------------------------------------------------------------------ */
+
+const initialDataSource = readStoredSeries();
+let dataSeries = initialDataSource.series;
+let currentVersion = computeVersion(dataSeries, initialDataSource.refreshedAt);
+const versionListeners = new Set<(version: DataSourceVersion) => void>();
+
+function readStoredSeries(): { series: number; refreshedAt: number } {
+  let series = 0;
+  let refreshedAt = 0;
+  try {
+    const raw = window.localStorage.getItem(VERSION_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { series?: number; refreshedAt?: number };
+      if (Number.isFinite(parsed.series) && (parsed.series ?? 0) >= 0) {
+        series = Math.floor(parsed.series ?? 0);
+      }
+      refreshedAt = Number.isFinite(parsed.refreshedAt) ? (parsed.refreshedAt as number) : 0;
+    }
+  } catch {
+    series = 0;
+  }
+  // 启动时按已持久化的代数重放 ETL，使版本指纹与刷新前一致
+  for (let index = 0; index < series; index += 1) {
+    applyEtlWave(index + 1);
+  }
+  return { series, refreshedAt };
+}
+
+/** 32 位 FNV-1a 指纹：对每张表抽样行值求哈希，18000 行也只需 O(样本数) */
+function digestTables(): string {
+  let hash = 0x811c9dc5;
+  const mix = (text: string) => {
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+  };
+
+  DATABASE.tables.forEach((table) => {
+    mix(table.name);
+    mix(String(table.rows.length));
+    const step = Math.max(1, Math.floor(table.rows.length / 120));
+    for (let index = 0; index < table.rows.length; index += step) {
+      const row = table.rows[index];
+      table.columns.forEach((column) => mix(`${column.name}=${String(row[column.name] ?? '')}`));
+    }
+  });
+  return hash.toString(16).padStart(8, '0');
+}
+
+function computeVersion(series: number, refreshedAt: number): DataSourceVersion {
+  const digest = digestTables();
+  return {
+    series,
+    digest,
+    id: `v${series + 1}-${digest.slice(0, 6)}`,
+    refreshedAt: refreshedAt || Date.now(),
+  };
+}
+
+export function getDataSourceVersion(): DataSourceVersion {
+  return currentVersion;
+}
+
+export function subscribeDataSourceVersion(
+  listener: (version: DataSourceVersion) => void,
+): () => void {
+  versionListeners.add(listener);
+  return () => versionListeners.delete(listener);
+}
+
+/** 第 n 代 ETL 对数据做确定性微调，保证同一代数重放后内容指纹一致 */
+function applyEtlWave(wave: number) {
+  const ordersTable = DATABASE.tables.find((table) => table.name === 'orders');
+  if (ordersTable) {
+    const stride = 3 + (wave % 5);
+    ordersTable.rows.forEach((row, index) => {
+      if (index % stride === 0) {
+        const amount = typeof row.amount === 'number' ? row.amount : 0;
+        row.amount = Math.max(1, Math.round(amount * (1 + ((wave % 7) - 3) * 0.01) * 100) / 100);
+        row.status = STATUSES[(index * 13 + wave) % STATUSES.length];
+      }
+    });
+  }
+  const customersTable = DATABASE.tables.find((table) => table.name === 'customers');
+  if (customersTable) {
+    customersTable.rows.forEach((row, index) => {
+      if (index % 17 === wave % 17) {
+        row.credit_limit =
+          200000 + ((index + wave * 7) % 80) * 50000;
+      }
+    });
+  }
+  const productsTable = DATABASE.tables.find((table) => table.name === 'products');
+  if (productsTable) {
+    productsTable.rows.forEach((row, index) => {
+      if (index % 23 === wave % 23) {
+        const price = typeof row.list_price === 'number' ? row.list_price : 1999;
+        row.list_price = Math.max(99, price + (wave % 5) * 37);
+      }
+    });
+  }
+  const employeesTable = DATABASE.tables.find((table) => table.name === 'employees');
+  if (employeesTable) {
+    employeesTable.rows.forEach((row, index) => {
+      if (index % 29 === wave % 29) {
+        const performance = typeof row.performance === 'number' ? row.performance : 70;
+        row.performance = Math.min(
+          100,
+          Math.round((performance + ((wave % 5) - 2) * 0.4) * 10) / 10,
+        );
+      }
+    });
+  }
+}
+
+/** 模拟数据源 ETL 刷新：进入新一代版本并通知订阅者（在飞批次另行中止） */
+export function refreshDataSource(): DataSourceVersion {
+  dataSeries += 1;
+  applyEtlWave(dataSeries);
+  const refreshedAt = Date.now();
+  try {
+    window.localStorage.setItem(
+      VERSION_STORAGE_KEY,
+      JSON.stringify({ series: dataSeries, refreshedAt }),
+    );
+  } catch {
+    // 版本序号无法持久化时仅影响本次会话，不阻断刷新
+  }
+  currentVersion = computeVersion(dataSeries, refreshedAt);
+  versionListeners.forEach((listener) => listener(currentVersion));
+  return currentVersion;
+}
+
+/**
+ * 执行查询。
+ * signal 触发时抛出 QUERY_ABORTED（用户取消）；
+ * 执行期间数据源版本刷新时抛出 BATCH_SUPERSEDED（旧批次不能写回结果）。
+ */
 export async function executeMockQuery(
   sql: string,
   signal?: AbortSignal,
 ): Promise<QueryResult> {
   const startedAt = performance.now();
+  const versionAtStart = currentVersion;
   const parsed = parseSelect(sql);
   if (!parsed) {
     throw new SqlQueryError(
@@ -160,16 +307,44 @@ export async function executeMockQuery(
     );
   }
 
-  await waitForMockLatency(180 + Math.min(1000, parsed.table.rows.length / 40), signal);
+  // 解析完成后立即固定数据快照：后续 ETL 刷新不会改变本批次依据的数据
+  const snapshotTable: TableSchema = {
+    ...parsed.table,
+    columns: parsed.table.columns,
+    rows: parsed.table.rows.map((row) => ({ ...row })),
+  };
+
+  const rejectIfStale = () => {
+    if (signal?.aborted) {
+      throw new SqlQueryError(
+        'QUERY_ABORTED',
+        '用户取消了长时间查询',
+        '可以缩小时间范围或增加筛选条件。',
+      );
+    }
+    if (currentVersion.id !== versionAtStart.id) {
+      throwSuperseded(versionAtStart.id);
+    }
+  };
+
+  await waitForMockLatency(
+    180 + Math.min(1000, snapshotTable.rows.length / 40),
+    signal,
+    () => currentVersion.id !== versionAtStart.id,
+  );
+  rejectIfStale();
 
   const selectedColumns = resolveColumns(parsed);
   const filtered = parsed.where
-    ? parsed.table.rows.filter((row) => evaluateWhere(row, parsed.where as WhereNode))
-    : [...parsed.table.rows];
+    ? snapshotTable.rows.filter((row) => evaluateWhere(row, parsed.where as WhereNode))
+    : [...snapshotTable.rows];
 
   if (parsed.orderBy) {
     const { field, direction } = parsed.orderBy;
-    filtered.sort((left, right) => compareValues(left[field], right[field]) * (direction === 'asc' ? 1 : -1));
+    filtered.sort(
+      (left, right) =>
+        compareValues(left[field], right[field]) * (direction === 'asc' ? 1 : -1),
+    );
   }
 
   const rows = filtered.slice(0, parsed.limit).map((row) => {
@@ -180,9 +355,11 @@ export async function executeMockQuery(
     return projected;
   });
 
+  rejectIfStale();
+
   return {
     columns: selectedColumns.map(({ name, source }) => {
-      const schema = parsed.table.columns.find((column) => column.name === source);
+      const schema = snapshotTable.columns.find((column) => column.name === source);
       return { name, label: name, type: schema?.type ?? 'string' } satisfies QueryColumn;
     }),
     rows,
@@ -191,7 +368,20 @@ export async function executeMockQuery(
     elapsedMs: Math.max(12, Math.round(performance.now() - startedAt)),
     sql,
     truncated: filtered.length > parsed.limit,
+    dataVersion: versionAtStart.id,
   };
+}
+
+function makeSupersededError(versionId: string): SqlQueryError {
+  return new SqlQueryError(
+    'BATCH_SUPERSEDED',
+    `数据源已刷新到新版本，依据 ${versionId} 的执行批次自动失效`,
+    '结果区保留了上一版本快照，点击「按新版本重算」获取最新结果。',
+  );
+}
+
+function throwSuperseded(versionId: string): never {
+  throw makeSupersededError(versionId);
 }
 
 function parseSelect(sql: string): ParsedQuery | null {
@@ -397,10 +587,26 @@ function compareRaw(left: SqlValue, right: string): number {
   return String(left).localeCompare(right, 'zh-CN');
 }
 
-function waitForMockLatency(milliseconds: number, signal?: AbortSignal): Promise<void> {
+function waitForMockLatency(
+  milliseconds: number,
+  signal?: AbortSignal,
+  isStale?: () => boolean,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const startedAt = performance.now();
     const timer = window.setInterval(() => {
+      // 版本失效优先于普通取消：版本刷新会同时中止信号，但语义必须是 superseded
+      if (performance.now() - startedAt < milliseconds && isStale?.()) {
+        window.clearInterval(timer);
+        reject(
+          new SqlQueryError(
+            'BATCH_SUPERSEDED',
+            '数据源已刷新到新版本，执行批次自动失效',
+            '结果区保留了上一版本快照，点击「按新版本重算」获取最新结果。',
+          ),
+        );
+        return;
+      }
       if (signal?.aborted) {
         window.clearInterval(timer);
         reject(new SqlQueryError('QUERY_ABORTED', '用户取消了长时间查询', '可以缩小时间范围或增加筛选条件。'));

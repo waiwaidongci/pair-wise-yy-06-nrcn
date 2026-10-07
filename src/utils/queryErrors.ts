@@ -34,4 +34,7 @@ export const ERROR_MAPPINGS: Record<string, { title: string; hint: string }> = {
   COLUMN_NOT_FOUND: { title: '字段不存在', hint: '使用补全提示选择表中存在的字段。' },
   EMPTY_SQL: { title: '未输入 SQL', hint: '请输入一条 SELECT 查询。' },
   QUERY_ABORTED: { title: '查询已取消', hint: '可修改条件后重新执行。' },
+  BATCH_SUPERSEDED: { title: '批次已失效', hint: '数据源版本已刷新，请按新版本重算。' },
+  BATCH_STALE: { title: '旧批次被拒绝', hint: '同一标签只接受最新批次的结果。' },
+  WRITE_ROLLED_BACK: { title: '写入已回滚', hint: '持久化写入失败，已恢复上一次完整批次。' },
 };

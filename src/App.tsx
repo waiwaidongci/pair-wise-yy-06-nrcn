@@ -2,10 +2,18 @@ import {
   CloudServerOutlined,
   CodeOutlined,
   HistoryOutlined,
+  ReloadOutlined,
   StarOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
-import { Layout, Tag, Tooltip } from 'antd';
+import { useQueryClient } from '@tanstack/react-query';
+import { App as AntdApp, Layout, Tag, Tooltip } from 'antd';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { getDataSourceVersion, subscribeDataSourceVersion } from './data/mockDatabase';
+import { useAutoRecompute, useBatchExecutor } from './hooks/useBatchExecutor';
+import { useWorkbenchStore } from './stores/workbenchStore';
+import type { DataSourceVersion } from './types/sql';
 
 const NAV_ITEMS = [
   { path: '/workbench', label: 'SQL 工作台', icon: <CodeOutlined /> },
@@ -15,7 +23,36 @@ const NAV_ITEMS = [
 
 export function App() {
   const location = useLocation();
+  const { message } = AntdApp.useApp();
+  const queryClient = useQueryClient();
+  const refreshDataVersion = useWorkbenchStore((state) => state.refreshDataVersion);
+  const currentVersionId = useWorkbenchStore((state) => state.dataVersion);
+  const activeTabId = useWorkbenchStore((state) => state.activeTabId);
+  const [version, setVersion] = useState<DataSourceVersion>(() => getDataSourceVersion());
+  const [refreshing, setRefreshing] = useState(false);
+
+  // 全局批次执行器（多标签并发）；活动标签的自动重算提示在工作台页面处理
+  useBatchExecutor();
+  useAutoRecompute(location.pathname.startsWith('/workbench') ? activeTabId : undefined);
+
+  useEffect(() => subscribeDataSourceVersion(setVersion), []);
+
   const current = NAV_ITEMS.find((item) => location.pathname.startsWith(item.path));
+
+  const handleRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    // 先推进内存数据源版本（store 会中止在飞批次并标记旧快照过期），再刷新结构树缓存
+    const nextId = refreshDataVersion();
+    void queryClient.invalidateQueries({ queryKey: ['database-schema'] });
+    setVersion(getDataSourceVersion());
+    window.setTimeout(() => {
+      setRefreshing(false);
+      void message.success(
+        `数据源已 ETL 刷新到 ${nextId}：在飞批次已中止，旧结果保留并按新版本重算`,
+      );
+    }, 300);
+  };
 
   return (
     <Layout className="app-shell">
@@ -45,12 +82,25 @@ export function App() {
           <span className="source-pulse" />
           <div>
             <strong>commerce_dw</strong>
-            <small>前端内存数据源</small>
+            <small>
+              第 {version.series + 1} 代 · {version.id}
+            </small>
           </div>
           <Tag color="success">在线</Tag>
+          <Tooltip title="模拟数据源 ETL 刷新：产生新版本，在飞批次失效并自动重算，历史保留原版本结果">
+            <button
+              type="button"
+              className="data-source-refresh"
+              disabled={refreshing}
+              onClick={handleRefresh}
+            >
+              {refreshing ? <SyncOutlined spin /> : <ReloadOutlined />} 刷新数据
+            </button>
+          </Tooltip>
+          <small className="data-source-current">工作台批次固定版本：{currentVersionId}</small>
         </div>
         <div className="sider-footer">
-          <span>查询引擎 v1.4.2</span>
+          <span>查询引擎 v1.5.0</span>
           <Tooltip title="所有数据和查询均在浏览器内运行">
             <span>Local Only</span>
           </Tooltip>
@@ -65,7 +115,7 @@ export function App() {
           <div className="header-status">
             <span className="header-status__dot" />
             <span>模拟集群运行正常</span>
-            <Tag>18,000+ 行订单</Tag>
+            <Tag color="blue">数据源 {version.id}</Tag>
           </div>
         </Layout.Header>
         <Layout.Content className="app-content">

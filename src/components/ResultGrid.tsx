@@ -1,14 +1,27 @@
-import { CopyOutlined, DownloadOutlined, TableOutlined } from '@ant-design/icons';
-import { App as AntdApp, Button, Empty, Spin, Table, Tag } from 'antd';
+import { CopyOutlined, DownloadOutlined, ReloadOutlined, TableOutlined } from '@ant-design/icons';
+import { Alert, App as AntdApp, Button, Empty, Spin, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TableProps } from 'antd';
 import { useEffect, useMemo, useState, type ThHTMLAttributes } from 'react';
-import type { QueryResult, SqlValue } from '../types/sql';
+import type { BatchRecord, QueryResult, SqlValue } from '../types/sql';
+
+interface GridNotice {
+  type: 'stale' | 'canceled' | 'superseded' | 'failed' | 'empty';
+  title: string;
+  detail: string;
+  version?: string;
+  batchId?: string;
+}
 
 interface ResultGridProps {
   result: QueryResult | null;
+  /** 结果行数据是否完整保留（历史精简记录只有元数据） */
+  resultRetained: boolean;
   loading: boolean;
-  error: string | null;
+  runningBatch?: BatchRecord;
+  notice: GridNotice | null;
+  currentVersion: string;
+  onRecompute?: () => void;
 }
 
 interface ResizableTitleProps extends ThHTMLAttributes<HTMLTableCellElement> {
@@ -50,7 +63,15 @@ function normalizeRow(row: Record<string, SqlValue>): Record<string, SqlValue> {
   return row;
 }
 
-export function ResultGrid({ result, loading, error }: ResultGridProps) {
+export function ResultGrid({
+  result,
+  resultRetained,
+  loading,
+  runningBatch,
+  notice,
+  currentVersion,
+  onRecompute,
+}: ResultGridProps) {
   const { message } = AntdApp.useApp();
   const [widths, setWidths] = useState<Record<string, number>>({});
 
@@ -168,7 +189,18 @@ export function ResultGrid({ result, loading, error }: ResultGridProps) {
               </Tag>
               <span>匹配 {result.totalMatched.toLocaleString('zh-CN')} 行</span>
               <span>· {result.elapsedMs} ms</span>
+              <Tooltip title="该快照依据的数据源版本；版本刷新后结果标记过期但不覆盖">
+                <Tag color={result.dataVersion === currentVersion ? 'blue' : 'default'}>
+                  {result.dataVersion}
+                </Tag>
+              </Tooltip>
+              {notice?.batchId && result.dataVersion !== currentVersion && (
+                <span className="muted-text">批次 {notice.batchId.slice(0, 8)}</span>
+              )}
             </>
+          )}
+          {runningBatch && (
+            <Tag color="processing">执行中 · {runningBatch.dataVersion}</Tag>
           )}
         </div>
         <div>
@@ -204,24 +236,68 @@ export function ResultGrid({ result, loading, error }: ResultGridProps) {
           </Button>
         </div>
       </div>
+      {notice && notice.type !== 'empty' && notice.type !== 'stale' && !loading && (
+        <Alert
+          showIcon
+          className="result-notice"
+          type={notice.type === 'failed' ? 'error' : 'info'}
+          message={notice.title}
+          description={notice.detail}
+        />
+      )}
+      {notice && notice.type === 'stale' && !loading && result && !runningBatch && (
+        <Alert
+          showIcon
+          className="result-notice"
+          type="warning"
+          message={notice.title}
+          description={
+            <span>
+              {notice.detail}
+              <Button
+                size="small"
+                type="link"
+                icon={<ReloadOutlined />}
+                onClick={onRecompute}
+              >
+                按新版本重算
+              </Button>
+            </span>
+          }
+        />
+      )}
       <div className="result-body">
-        {loading ? (
-          <div className="result-state">
+        {loading && (
+          <div className="result-loading-overlay">
             <Spin size="large" />
-            <span>模拟数据源正在执行查询…</span>
+            <span>
+              批次 {runningBatch?.id.slice(0, 8)} 执行中… 已固定版本
+              {runningBatch ? ` ${runningBatch.dataVersion}` : ''}
+            </span>
           </div>
-        ) : error ? (
-          <div className="result-error">
-            <strong>查询未能执行</strong>
-            <span>{error}</span>
-            <small>错误位置已在编辑器中高亮，可按 Esc 关闭提示后修改 SQL。</small>
-          </div>
-        ) : result ? (
+        )}
+        {result && resultRetained ? (
           <Table<Record<string, SqlValue | number>>
             {...tableProps}
             columns={columns}
             dataSource={dataSource}
           />
+        ) : notice?.type === 'failed' ? (
+          <div className="result-error">
+            <strong>{notice.title}</strong>
+            <span>{notice.detail}</span>
+            <small>失败批次不覆盖结果；错误位置已在编辑器中高亮，修改后可重新执行。</small>
+          </div>
+        ) : notice && notice.type !== 'empty' ? (
+          <div className="result-state">
+            <strong>{notice.title}</strong>
+            <span>{notice.detail}</span>
+            {notice.type === 'superseded' && (
+              <Button type="primary" ghost size="small" icon={<ReloadOutlined />} onClick={onRecompute}>
+                按新版本重算
+              </Button>
+            )}
+          </div>
         ) : (
           <Empty
             className="result-empty"
